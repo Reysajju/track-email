@@ -12,7 +12,16 @@
 
         // Global variables provided by the Canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        // --- IMPORTANT: REPLACE with your actual firebaseConfig object from the Firebase console ---
+          const firebaseConfig = {
+            apiKey: "AIzaSyAVBENi4A2IOstLn_QEw1DEN5bd-zP4V3k",
+            authDomain: "track-hosting.firebaseapp.com",
+            projectId: "track-hosting",
+            storageBucket: "track-hosting.firebasestorage.app",
+            messagingSenderId: "251092647215",
+            appId: "1:251092647215:web:bf6fd97bb07d9860b7f5da",
+            measurementId: "G-04XCVJBW7V"
+        };
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let app, db, auth, userId = null;
@@ -32,7 +41,7 @@
 
         // Initialize Firebase on window load
         window.onload = function() {
-            if (Object.keys(firebaseConfig).length) {
+            if (Object.keys(firebaseConfig).length && firebaseConfig.apiKey !== "YOUR_API_KEY_HERE") {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
