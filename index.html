@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Tracking Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+
+        const authStatusEl = document.getElementById('auth-status');
+        const apiButton = document.getElementById('generate-api-key-btn');
+        const apiKeyEl = document.getElementById('api-key-display');
+        const processEmailForm = document.getElementById('process-email-form');
+        const rawHtmlTextarea = document.getElementById('raw-html-input');
+        const processedHtmlTextarea = document.getElementById('processed-html-output');
+        const trackingListEl = document.getElementById('tracking-list');
+        const processingMessage = document.getElementById('processing-message');
+        
+        // --- IMPORTANT: Update this URL to your Apps Script Web App URL or custom domain ---
+        const baseUrl = 'https://script.google.com/macros/s/YOUR_APPS_SCRIPT_ID/exec'; // Replace with your URL
+
+        // Initialize Firebase on window load
+        window.onload = function() {
+            if (Object.keys(firebaseConfig).length) {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Set up auth state listener
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        authStatusEl.innerText = `User ID: ${userId}`;
+                        isAuthReady = true;
+                        apiButton.disabled = false;
+                        console.log("Authenticated with user ID:", userId);
+                        attachTrackingListener(userId);
+                    } else {
+                        // Sign in anonymously if no token is available
+                        await signInAnonymously(auth);
+                    }
+                });
+                
+                // Use the provided auth token if available
+                if (initialAuthToken) {
+                    signInWithCustomToken(auth, initialAuthToken).catch(async (error) => {
+                        console.error('Initial token sign-in failed, signing in anonymously...', error);
+                        await signInAnonymously(auth);
+                    });
+                } else {
+                    signInAnonymously(auth);
+                }
+            } else {
+                authStatusEl.innerText = "Firebase not configured.";
+                console.error("Firebase config is missing.");
+            }
+        };
+
+        apiButton.addEventListener('click', async () => {
+            if (!isAuthReady || !auth.currentUser) {
+                alert('Authentication not ready. Please wait.');
+                return;
+            }
+            try {
+                const idToken = await auth.currentUser.getIdToken(true);
+                const response = await fetch(`${baseUrl}?path=generate-api-key`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idToken })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    apiKeyEl.innerText = data.apiKey;
+                    alert('API Key generated successfully! Use this in your mail server/script.');
+                } else {
+                    alert('Error generating API key: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error generating API key:', error);
+                alert('An error occurred. Check the console.');
+            }
+        });
+
+        processEmailForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const apiKey = apiKeyEl.innerText;
+            const rawHtml = rawHtmlTextarea.value;
+            if (!apiKey || !rawHtml || apiKey.includes('...')) {
+                alert('Please generate an API key and enter HTML content.');
+                return;
+            }
+
+            processingMessage.classList.remove('hidden');
+
+            try {
+                const response = await fetch(`${baseUrl}?path=process-email`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ htmlContent: rawHtml, apiKey })
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    processedHtmlTextarea.value = data.processedHtml;
+                    alert(`Email processed. Tracking ID: ${data.emailId}`);
+                } else {
+                    alert('Error processing email: ' + (data.error || response.statusText));
+                }
+            } catch (error) {
+                console.error('Error processing email:', error);
+                alert('An error occurred. Check the console.');
+            } finally {
+                processingMessage.classList.add('hidden');
+            }
+        });
+
+        function attachTrackingListener(uid) {
+            const trackingPath = `artifacts/${appId}/users/${uid}/tracking`;
+            const trackingRef = collection(db, trackingPath);
+            const q = query(trackingRef);
+
+            onSnapshot(q, (snapshot) => {
+                const trackingDocs = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    trackingDocs.push({ id: doc.id, ...data });
+                });
+                renderTrackingData(trackingDocs);
+            });
+        }
+
+        function renderTrackingData(trackingDocs) {
+            trackingListEl.innerHTML = '';
+            if (trackingDocs.length === 0) {
+                trackingListEl.innerHTML = '<p class="text-center text-gray-500">No emails tracked yet.</p>';
+                return;
+            }
+
+            trackingDocs.forEach(doc => {
+                const item = document.createElement('div');
+                item.className = 'bg-white shadow-md rounded-lg p-4 mb-4';
+                const sentTime = doc.sentTimestamp ? new Date(doc.sentTimestamp.seconds * 1000).toLocaleString() : 'N/A';
+                const lastOpened = doc.lastOpened ? new Date(doc.lastOpened.seconds * 1000).toLocaleString() : 'N/A';
+                const lastClicked = doc.lastClicked ? new Date(doc.lastClicked.seconds * 1000).toLocaleString() : 'N/A';
+
+                item.innerHTML = `
+                    <h3 class="font-bold text-lg mb-2 text-indigo-700">Tracking ID: ${doc.id}</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-sm text-gray-600">
+                        <p><strong class="text-gray-800">Sent:</strong> ${sentTime}</p>
+                        <p><strong class="text-gray-800">Opens:</strong> ${doc.opens}</p>
+                        <p><strong class="text-gray-800">Clicks:</strong> ${doc.clicks}</p>
+                        <p><strong class="text-gray-800">Last Opened:</strong> ${lastOpened}</p>
+                        <p><strong class="text-gray-800">Last Clicked:</strong> ${lastClicked}</p>
+                        <p><strong class="text-gray-800">Status:</strong> <span class="text-green-600">${doc.status}</span></p>
+                    </div>
+                `;
+                trackingListEl.appendChild(item);
+            });
+        }
+    </script>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <h1 class="text-4xl font-bold text-center text-gray-800 mb-6">API-Based Email Tracker</h1>
+        <div id="app-container" class="bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">User & API Key</h2>
+            <div id="auth-status" class="bg-gray-200 p-3 rounded-md mb-4 text-gray-700 font-mono">Authenticating...</div>
+            <button id="generate-api-key-btn" class="w-full sm:w-auto px-6 py-3 bg-indigo-500 text-white font-bold rounded-lg shadow-md hover:bg-indigo-600 transition-colors duration-200 disabled:bg-gray-400" disabled>Generate API Key</button>
+            <div class="mt-4">
+                <h3 class="font-bold text-lg text-gray-800">Your API Key:</h3>
+                <code id="api-key-display" class="block bg-gray-100 p-3 mt-2 rounded-md border border-gray-300 overflow-auto text-gray-900">
+                    Your key will appear here...
+                </code>
+            </div>
+        </div>
+        
+        <div class="bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">Process & Track an Email</h2>
+            <form id="process-email-form">
+                <div class="mb-4">
+                    <label for="raw-html-input" class="block text-gray-700 font-semibold mb-2">1. Paste Raw HTML Email Content</label>
+                    <textarea id="raw-html-input" rows="8" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="<p>Hello world!</p><a href='http://example.com'>Click here</a>"></textarea>
+                </div>
+                <div class="mb-4">
+                    <button type="submit" class="w-full px-6 py-3 bg-green-500 text-white font-bold rounded-lg shadow-md hover:bg-green-600 transition-colors duration-200">
+                        Process Email with API
+                    </button>
+                    <p id="processing-message" class="text-center mt-2 text-sm text-gray-500 hidden">Processing email...  </p>
+                </div>
+                <div>
+                    <label for="processed-html-output" class="block text-gray-700 font-semibold mb-2">2. Processed HTML (Ready to Send)</label>
+                    <textarea id="processed-html-output" rows="8" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-50 cursor-not-allowed" readonly></textarea>
+                </div>
+            </form>
+        </div>
+        
+        <div class="bg-white shadow-lg rounded-xl p-6">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">Email Tracking Dashboard</h2>
+            <div id="tracking-list" class="space-y-4">
+                <!-- Tracking data will be rendered here -->
+            </div>
+        </div>
+    </div>
+</body>
+</html>
