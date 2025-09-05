@@ -41,7 +41,7 @@
 
         // Initialize Firebase on window load
         window.onload = function() {
-            if (Object.keys(firebaseConfig).length && firebaseConfig.apiKey !== "YOUR_API_KEY_HERE") {
+            if (firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
