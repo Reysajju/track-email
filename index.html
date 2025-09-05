@@ -8,7 +8,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables provided by the Canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -29,12 +29,16 @@
 
         const authStatusEl = document.getElementById('auth-status');
         const apiButton = document.getElementById('generate-api-key-btn');
-        const apiKeyEl = document.getElementById('api-key-display');
         const processEmailForm = document.getElementById('process-email-form');
         const rawHtmlTextarea = document.getElementById('raw-html-input');
         const processedHtmlTextarea = document.getElementById('processed-html-output');
         const trackingListEl = document.getElementById('tracking-list');
         const processingMessage = document.getElementById('processing-message');
+        const domainInput = document.getElementById('domain-input');
+        const registerDomainBtn = document.getElementById('register-domain-btn');
+        const verifyDomainBtn = document.getElementById('verify-domain-btn');
+        const domainStatusEl = document.getElementById('domain-status');
+        const verificationCodeEl = document.getElementById('verification-code');
         
         // --- IMPORTANT: Update this URL to your Apps Script Web App URL or custom domain ---
         const baseUrl = 'https://script.google.com/macros/s/AKfycbzppIV8h29uGSlxyrpMju9RkT6wJBWBiIr6hShw8pzERZVOruHigi36dNbDIPg_nLlMcQ/exec';
@@ -45,6 +49,7 @@
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
+                console.log("Firebase configured with:", firebaseConfig);
 
                 // Set up auth state listener
                 onAuthStateChanged(auth, async (user) => {
@@ -52,8 +57,9 @@
                         userId = user.uid;
                         authStatusEl.innerText = `User ID: ${userId}`;
                         isAuthReady = true;
-                        apiButton.disabled = false;
+                        apiButton.disabled = true; // Disabled by default
                         console.log("Authenticated with user ID:", userId);
+                        await checkDomainVerificationStatus();
                         attachTrackingListener(userId);
                     } else {
                         // Sign in anonymously if no token is available
@@ -72,9 +78,84 @@
                 }
             } else {
                 authStatusEl.innerText = "Firebase not configured.";
-                console.error("Firebase config is missing.");
+                console.error("Firebase config is missing or invalid. Please check your firebaseConfig object.");
             }
         };
+
+        async function checkDomainVerificationStatus() {
+            if (!isAuthReady || !auth.currentUser) return;
+            const domainPath = `artifacts/${appId}/users/${userId}/domain-verification/main`;
+            const domainRef = doc(db, domainPath);
+            const domainSnap = await getDoc(domainRef);
+
+            if (domainSnap.exists()) {
+                const data = domainSnap.data();
+                if (data.status === 'verified') {
+                    domainStatusEl.innerHTML = `Domain: <strong class="text-green-600">${data.domain}</strong> Verified!`;
+                    apiButton.disabled = false;
+                    registerDomainBtn.disabled = true;
+                    domainInput.disabled = true;
+                } else if (data.status === 'pending') {
+                    domainStatusEl.innerHTML = `Domain: <strong class="text-orange-600">${data.domain}</strong> Pending Verification`;
+                    verificationCodeEl.innerText = data.verificationCode;
+                    document.getElementById('verification-section').classList.remove('hidden');
+                }
+            }
+        }
+
+        registerDomainBtn.addEventListener('click', async () => {
+            if (!isAuthReady || !auth.currentUser) {
+                alert('Authentication not ready. Please wait.');
+                return;
+            }
+            const domain = domainInput.value.trim();
+            if (!domain) {
+                alert('Please enter a valid domain.');
+                return;
+            }
+
+            const verificationCode = `gemini-tracker-${crypto.randomUUID()}`;
+            const domainPath = `artifacts/${appId}/users/${userId}/domain-verification/main`;
+            const domainRef = doc(db, domainPath);
+
+            try {
+                await setDoc(domainRef, {
+                    domain: domain,
+                    verificationCode: verificationCode,
+                    status: 'pending',
+                    timestamp: serverTimestamp()
+                });
+                domainStatusEl.innerHTML = `Domain: <strong class="text-orange-600">${domain}</strong> Pending Verification`;
+                verificationCodeEl.innerText = verificationCode;
+                document.getElementById('verification-section').classList.remove('hidden');
+                alert('Domain registered. Please add the TXT record to your DNS and click Verify.');
+            } catch (error) {
+                console.error('Error registering domain:', error);
+                alert('An error occurred while registering the domain.');
+            }
+        });
+
+        verifyDomainBtn.addEventListener('click', async () => {
+             // A real app would perform a DNS lookup here.
+             // For this demo, we'll assume the user has added the TXT record.
+             if (!isAuthReady || !auth.currentUser) {
+                alert('Authentication not ready. Please wait.');
+                return;
+            }
+
+            const domainPath = `artifacts/${appId}/users/${userId}/domain-verification/main`;
+            const domainRef = doc(db, domainPath);
+
+            try {
+                await setDoc(domainRef, { status: 'verified' }, { merge: true });
+                checkDomainVerificationStatus();
+                alert('Domain verification successful!');
+                document.getElementById('verification-section').classList.add('hidden');
+            } catch (error) {
+                console.error('Error verifying domain:', error);
+                alert('An error occurred during verification.');
+            }
+        });
 
         apiButton.addEventListener('click', async () => {
             if (!isAuthReady || !auth.currentUser) {
@@ -90,7 +171,7 @@
                 });
                 const data = await response.json();
                 if (response.ok) {
-                    apiKeyEl.innerText = data.apiKey;
+                    document.getElementById('api-key-display').innerText = data.apiKey;
                     alert('API Key generated successfully! Use this in your mail server/script.');
                 } else {
                     alert('Error generating API key: ' + data.error);
@@ -103,7 +184,7 @@
 
         processEmailForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const apiKey = apiKeyEl.innerText;
+            const apiKey = document.getElementById('api-key-display').innerText;
             const rawHtml = rawHtmlTextarea.value;
             if (!apiKey || !rawHtml || apiKey.includes('...')) {
                 alert('Please generate an API key and enter HTML content.');
@@ -182,10 +263,41 @@
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
     <div class="container mx-auto px-4 py-8 max-w-4xl">
         <h1 class="text-4xl font-bold text-center text-gray-800 mb-6">API-Based Email Tracker</h1>
-        <div id="app-container" class="bg-white shadow-lg rounded-xl p-6 mb-8">
-            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">User & API Key</h2>
-            <div id="auth-status" class="bg-gray-200 p-3 rounded-md mb-4 text-gray-700 font-mono">Authenticating...</div>
-            <button id="generate-api-key-btn" class="w-full sm:w-auto px-6 py-3 bg-indigo-500 text-white font-bold rounded-lg shadow-md hover:bg-indigo-600 transition-colors duration-200 disabled:bg-gray-400" disabled>Generate API Key</button>
+        
+        <div id="auth-status" class="bg-gray-200 p-3 rounded-md mb-4 text-gray-700 font-mono text-center">Authenticating...</div>
+        
+        <div id="domain-section" class="bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">Domain Verification</h2>
+            <div id="domain-status" class="bg-gray-100 p-3 rounded-md mb-4 text-gray-700 font-mono">
+                No domain registered.
+            </div>
+            <div class="mb-4">
+                <label for="domain-input" class="block text-gray-700 font-semibold mb-2">1. Enter Your Sending Domain</label>
+                <input type="text" id="domain-input" placeholder="e.g., example.com" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                <button id="register-domain-btn" class="w-full sm:w-1/2 px-6 py-3 bg-blue-500 text-white font-bold rounded-lg shadow-md hover:bg-blue-600 transition-colors duration-200">Register Domain</button>
+            </div>
+            
+            <div id="verification-section" class="mt-6 hidden">
+                <p class="text-gray-700 mb-2">
+                    <strong class="text-red-500">Important:</strong> Add the following `TXT` record to your domain's DNS settings.
+                </p>
+                <div class="bg-gray-100 p-3 rounded-md border border-gray-300 overflow-auto">
+                    <h4 class="font-bold text-gray-800">DNS Record:</h4>
+                    <p class="text-sm">Type: <span class="font-mono">TXT</span></p>
+                    <p class="text-sm">Host/Name: <span class="font-mono">@</span> or your domain</p>
+                    <p class="text-sm">Value: <code id="verification-code" class="font-mono text-gray-900"></code></p>
+                </div>
+                <button id="verify-domain-btn" class="w-full px-6 py-3 bg-green-500 text-white font-bold rounded-lg shadow-md hover:bg-green-600 transition-colors duration-200 mt-4">
+                    Verify Domain
+                </button>
+            </div>
+        </div>
+
+        <div id="api-key-section" class="bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-600">API Key</h2>
+            <button id="generate-api-key-btn" class="w-full px-6 py-3 bg-indigo-500 text-white font-bold rounded-lg shadow-md hover:bg-indigo-600 transition-colors duration-200 disabled:bg-gray-400" disabled>Generate API Key</button>
             <div class="mt-4">
                 <h3 class="font-bold text-lg text-gray-800">Your API Key:</h3>
                 <code id="api-key-display" class="block bg-gray-100 p-3 mt-2 rounded-md border border-gray-300 overflow-auto text-gray-900">
